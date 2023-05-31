@@ -1,0 +1,157 @@
+#!/bin/bash
+#
+#
+
+#######################################################################
+# Initialization:
+
+: ${OCF_FUNCTIONS_DIR=${OCF_ROOT}/lib/heartbeat}
+. ${OCF_FUNCTIONS_DIR}/ocf-shellfuncs
+
+DRBDADM="/usr/sbin/drbdadm"
+
+meta_data() {
+    cat <<END
+<?xml version="1.0"?>
+<!DOCTYPE resource-agent SYSTEM "ra-api-1.dtd">
+<resource-agent name="drbddisk" version="0.1">
+<version>1.0</version>
+
+<longdesc lang="en">
+Resource agent for drbd
+</longdesc>
+<shortdesc lang="en">Example stateless resource agent</shortdesc>
+
+<parameters>
+<parameter name="res" unique="1" required="1">
+<longdesc lang="en">
+Location to store the resource state in.
+</longdesc>
+<shortdesc lang="en">State file</shortdesc>
+</parameter>
+
+</parameters>
+
+<actions>
+<action name="start"        timeout="20" />
+<action name="stop"         timeout="20" />
+<action name="monitor"      timeout="20" interval="10" depth="0" />
+<action name="reload"       timeout="20" />
+<action name="migrate_to"   timeout="20" />
+<action name="migrate_from" timeout="20" />
+<action name="meta-data"    timeout="5" />
+<action name="validate-all"   timeout="20" />
+</actions>
+</resource-agent>
+END
+}
+usage() {
+    cat <<END
+usage: $0 {start|stop|monitor|migrate_to|migrate_from|validate-all|meta-data}
+
+Expects to have a fully populated OCF RA-compliant environment set.
+END
+}
+start() {
+    # try several times, in case heartbeat deadtime
+    # was smaller than drbd ping time
+    try=6
+    while [ $try -gt 0 ]; do
+        ${DRBDADM} up ${OCF_RESKEY_res} 
+        ${DRBDADM} primary ${OCF_RESKEY_res} && break
+        try=$((try-1))
+    done
+    return $OCF_SUCCESS
+}
+stop() {
+    try=3
+    while [ $try -ge 0 ]; do
+        sleep 1
+        [ -e /etc/drbd.d/${OCF_RESKEY_res}.res ] || return $OCF_ERR_INSTALLED}
+        [ -f /proc/drbd ] || return $OCF_NOT_RUNNING
+        ${DRBDADM} secondary ${OCF_RESKEY_res} && break
+		try=$((try-1))
+        sleep 1
+    done
+    return $OCF_SUCCESS
+}
+monitor() {
+    # Monitor _MUST!_ differentiate correctly between running
+    # (SUCCESS), failed (ERROR) or _cleanly_ stopped (NOT RUNNING).
+    # That is THREE states, not just yes/no.
+    if ! [ -e /etc/drbd.d/${OCF_RESKEY_res}.res ]; then
+        ocf_log err "no configuration found for ${OCF_RESKEY_res} at /etc/drbd.d/${OCF_RESKEY_res}.res"
+        return ${OCF_ERR_INSTALLED}
+    fi
+    if ! [ -e /proc/drbd ]; then
+        ocf_log err "drbd kernel module not loaded"
+        return ${OCF_ERR_INSTALLED}
+    fi
+    res=${DRBDADM} dstate ${OCF_RESKEY_res}
+    if [ "${res}" = "Consistent" ]; then
+      ocf_log err "DRBD device ${OCF_RESKEY_res} not active"
+      return $OCF_NOT_RUNNING
+    fi
+    #if ! [ -b /dev/${OCF_RESKEY_res} ]; then
+    #  ocf_log err "block device /dev/${OCF_RESKEY_res} does not exist"
+    #  return ${OCF_ERR_INSTALLED}
+    #fi
+    res=$($DRBDADM dstate ${OCF_RESKEY_res} | cut -d '/' -f1)
+    if ! [ "$res" = "UpToDate" ]; then
+        ocf_log err "DRBD device ${OCF_RESKEY_res} not UpToDate."
+        return ${OCF_ERR_GENERIC}
+    fi
+
+    ST=$($DRBDADM role ${OCF_RESKEY_res})
+    ROLE=${ST%/*}
+    case $ROLE in
+        Primary)
+            return $OCF_SUCCESS 
+        ;;
+        Secondary|Unconfigured)
+        	return $OCF_NOT_RUNNING
+                        ;;
+        *)
+        return $OCF_ERR_GENERIC;;
+    esac
+
+}
+
+validate() {
+    # Is the state directory writable? 
+    if [ -x $DRBDADM ]; then
+    return $OCF_SUCCESS
+    fi
+    return $OCF_ERR_ARGS
+}
+
+: ${OCF_RESKEY_state=${HA_RSCTMP}/Dummy-${OCF_RESOURCE_INSTANCE}.state}
+: ${OCF_RESKEY_fake="dummy"}
+
+case $__OCF_ACTION in
+meta-data)  meta_data
+        exit $OCF_SUCCESS
+        ;;
+start)      start;;
+stop)       stop;;
+monitor)    monitor;;
+migrate_to) ocf_log info "Migrating ${OCF_RESOURCE_INSTANCE} to ${OCF_RESKEY_CRM_meta_migrate_target}."
+            stop
+        ;;
+migrate_from)   ocf_log info "Migrating ${OCF_RESOURCE_INSTANCE} from ${OCF_RESKEY_CRM_meta_migrate_source}."
+            start
+        ;;
+reload)     ocf_log info "Reloading ${OCF_RESOURCE_INSTANCE} ..."
+        ;;
+validate-all)   validate;;
+usage|help) usage
+        exit $OCF_SUCCESS
+        ;;
+*)      usage
+        exit $OCF_ERR_UNIMPLEMENTED
+        ;;
+esac
+rc=$?
+ocf_log debug "${OCF_RESOURCE_INSTANCE} $__OCF_ACTION : $rc"
+exit $rc
+

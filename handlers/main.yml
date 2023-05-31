@@ -1,0 +1,7 @@
+---
+- name: restart corosync
+  become: true
+  listen: corosync_changed
+  service:
+    name: corosync
+    state: restarted

@@ -1,0 +1,57 @@
+---
+- name: install software
+  become: true
+  apt:
+    update_cache: true
+    state: present
+    pkg:
+      - corosync
+      - pacemaker
+      - pcs
+      - resource-agents
+- name: set password for user hacluster
+  become: true
+  user:
+    name: hacluster
+    password: "$6$DJMPkpbLB37ObE1V$.vjoUCKOnd0sks73OTtz.p1vzF742cDR3HMoibCN0HxUbanvLLg0g9Z97bOrapeGDvnXGABp1nbplz304VILK/"
+- name: configure corosync
+  notify: corosync_changed
+  become: true
+  template:
+    src: templates/corosync.conf.j2
+    dest: /etc/corosync/corosync.conf
+- name: flush handlers
+  meta: flush_handlers
+- name: start and enable services
+  become: true
+  block:
+    - name: start and enable corosync
+      service:
+        name: corosync
+        state: started
+        enabled: true
+    - name: start and enable pacemaker
+      service:
+        name: pacemaker
+        state: started
+        enabled: true
+    - name: start and enable pcsd
+      service:
+        name: pcsd
+        state: started
+        enabled: true
+- name: authenticate user hacluster
+  become: true
+  shell:
+    cmd: "pcs cluster auth -u hacluster -p 'test'"
+- name: set up resource agents
+  become: true
+  synchronize:
+    src: files/ocf/
+    dest: /usr/lib/ocf/resource.d/itab
+    owner: false
+    group: false
+- name: set resource-stickiness
+  become: true
+  shell:
+    cmd: "pcs resource defaults resource-stickiness=100"
